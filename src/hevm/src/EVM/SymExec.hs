@@ -25,6 +25,8 @@ import GHC.Conc (numCapabilities)
 import Control.Concurrent.Async
 import Data.Maybe
 import Data.List (foldl')
+import Data.Vector (fromList)
+import Data.Map (lookup)
 
 import Data.ByteString (ByteString)
 import qualified Control.Monad.State.Class as State
@@ -196,13 +198,13 @@ loadSymVM x initStore addr callvalue' calldata' =
              (Just (initialContract x))
        & set (env . EVM.storage) initStore
 
-doInterpret :: Fetch.Fetcher -> Maybe Integer -> Maybe Integer -> VM -> Expr End
-doInterpret fetcher maxIter askSmtIters vm = undefined
---doInterpret fetcher maxIter askSmtIters vm = let
-      --f (vm', cs) = Node (BranchInfo (if null cs then vm' else vm) Nothing) cs
-    --in f <$> interpret' fetcher maxIter askSmtIters vm
+-- doInterpret :: Fetch.Fetcher -> Maybe Integer -> Maybe Integer -> VM -> Expr End
+-- doInterpret fetcher maxIter askSmtIters vm =
+--     let
+--       f (vm', cs) = Node (BranchInfo (if null cs then vm' else vm) Nothing) cs
+--     in f <$> interpret' fetcher maxIter askSmtIters vm
 
--- | Interpreter which explores all paths at branching points.
+-- Interpreter which explores all paths at branching points.
 -- returns an Expr representing the possible executions
 interpret
   :: Fetch.Fetcher
@@ -650,23 +652,21 @@ equivalenceCheck bytecodeA bytecodeB opts signature' = do
   let
     bytecodeA' = if BS.null bytecodeA then BS.pack [0] else bytecodeA
     bytecodeB' = if BS.null bytecodeB then BS.pack [0] else bytecodeB
-  preStateA <- abstractVM signature' [] bytecodeA' Nothing SymbolicS
+    preStateA = abstractVM signature' [] bytecodeA' Nothing SymbolicS
+    preself = preStateA ^. state . contract
+    precaller = preStateA ^. state . caller
+    callvalue' = preStateA ^. state . callvalue
+    prestorage =  preStateA ^?! (env . contracts . Data.Map.lookup addr . opIxMap)
+    calld = view (state . EVM.calldata) preStateA
+    pathconds = view constraints preStateA
+    runtimecode = (RuntimeCode $ Data.Vector.fromList $ map LitByte $ BS.unpack bytecodeB')
+    preStateB = loadSymVM runtimecode prestorage precaller callvalue' calld & set constraints pathconds
 
-  let preself = preStateA ^. state . contract
-      precaller = preStateA ^. state . caller
-      callvalue' = preStateA ^. state . callvalue
-      prestorage = preStateA ^?! env . contracts . ix preself . EVM.storage
-      calldata = view (state . EVM.calldata) preStateA
-      pathconds = view constraints preStateA
-      preStateB = loadSymVM (RuntimeCode $ map LitByte $ BS.unpack bytecodeB') prestorage precaller callvalue' calldata & set constraints pathconds
-
-  smtState <- queryState
-  push 1
   aVMs <- doInterpret (Fetch.oracle (Just smtState) Nothing False) maxiter askSmtIters preStateA
-  pop 1
-  push 1
+  -- pop 1
+  -- push 1
   bVMs <- doInterpret (Fetch.oracle (Just smtState) Nothing False) maxiter askSmtIters preStateB
-  pop 1
+  -- pop 1
   -- Check each pair of end states for equality:
   let differingEndStates = uncurry distinct <$> [(a,b) | a <- pruneDeadPaths (leaves aVMs), b <- pruneDeadPaths (leaves bVMs)]
       distinct a b =
@@ -695,7 +695,7 @@ equivalenceCheck bytecodeA bytecodeB opts signature' = do
         in sAnd (fst <$> aPath) .&& sAnd (fst <$> bPath) .&& differingResults
   -- If there exists a pair of end states where this is not the case,
   -- the following constraint is satisfiable
-  constrain $ sOr differingEndStates
+  constrain $  POr differingEndStates
 
   checkSat >>= \case
      Sat _ -> return $ Cex preStateA
