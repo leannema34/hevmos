@@ -645,63 +645,63 @@ verify solvers opts preState rpcinfo maybepost = do
       Error e -> error $ "Internal Error: solver responded with error: " <> show e
 
 -- | Compares two contract runtimes for trace equivalence by running two VMs and comparing the end states.
-equivalenceCheck :: ByteString -> ByteString -> Maybe Integer -> Maybe Integer -> Maybe (Text, [AbiType]) -> EquivalenceResult
-equivalenceCheck bytecodeA bytecodeB maxiter askSmtIters signature' = undefined
-  --let
-    --bytecodeA' = if BS.null bytecodeA then BS.pack [0] else bytecodeA
-    --bytecodeB' = if BS.null bytecodeB then BS.pack [0] else bytecodeB
-  --preStateA <- abstractVM signature' [] bytecodeA' SymbolicS
+equivalenceCheck :: ByteString -> ByteString -> VeriOpts -> Maybe (Text, [AbiType]) -> EquivalenceResult
+equivalenceCheck bytecodeA bytecodeB opts signature' = do
+  let
+    bytecodeA' = if BS.null bytecodeA then BS.pack [0] else bytecodeA
+    bytecodeB' = if BS.null bytecodeB then BS.pack [0] else bytecodeB
+  preStateA <- abstractVM signature' [] bytecodeA' Nothing SymbolicS
 
-  --let preself = preStateA ^. state . contract
-      --precaller = preStateA ^. state . caller
-      --callvalue' = preStateA ^. state . callvalue
-      --prestorage = preStateA ^?! env . contracts . ix preself . storage
-      --(calldata', cdlen) = view (state . calldata) preStateA
-      --pathconds = view constraints preStateA
-      --preStateB = loadSymVM (RuntimeCode (ConcreteBuffer bytecodeB')) prestorage SymbolicS precaller callvalue' (calldata', cdlen) & set constraints pathconds
+  let preself = preStateA ^. state . contract
+      precaller = preStateA ^. state . caller
+      callvalue' = preStateA ^. state . callvalue
+      prestorage = preStateA ^?! env . contracts . ix preself . EVM.storage
+      calldata = view (state . EVM.calldata) preStateA
+      pathconds = view constraints preStateA
+      preStateB = loadSymVM (RuntimeCode $ map LitByte $ BS.unpack bytecodeB') prestorage precaller callvalue' calldata & set constraints pathconds
 
-  --smtState <- queryState
-  --push 1
-  --aVMs <- doInterpret (Fetch.oracle (Just smtState) Nothing False) maxiter askSmtIters preStateA
-  --pop 1
-  --push 1
-  --bVMs <- doInterpret (Fetch.oracle (Just smtState) Nothing False) maxiter askSmtIters preStateB
-  --pop 1
-  ---- Check each pair of endstates for equality:
-  --let differingEndStates = uncurry distinct <$> [(a,b) | a <- pruneDeadPaths (leaves aVMs), b <- pruneDeadPaths (leaves bVMs)]
-      --distinct a b =
-        --let (aPath, bPath) = both' (view constraints) (a, b)
-            --(aSelf, bSelf) = both' (view (state . contract)) (a, b)
-            --(aEnv, bEnv) = both' (view (env . contracts)) (a, b)
-            --(aResult, bResult) = both' (view result) (a, b)
-            ----(Symbolic _ aStorage, Symbolic _ bStorage) = (view storage (aEnv ^?! ix aSelf), view storage (bEnv ^?! ix bSelf))
-            --differingResults = case (aResult, bResult) of
+  smtState <- queryState
+  push 1
+  aVMs <- doInterpret (Fetch.oracle (Just smtState) Nothing False) maxiter askSmtIters preStateA
+  pop 1
+  push 1
+  bVMs <- doInterpret (Fetch.oracle (Just smtState) Nothing False) maxiter askSmtIters preStateB
+  pop 1
+  -- Check each pair of end states for equality:
+  let differingEndStates = uncurry distinct <$> [(a,b) | a <- pruneDeadPaths (leaves aVMs), b <- pruneDeadPaths (leaves bVMs)]
+      distinct a b =
+        let (aPath, bPath) = both' (view constraints) (a, b)
+            (aSelf, bSelf) = both' (view (state . contract)) (a, b)
+            (aEnv, bEnv) = both' (view (env . contracts)) (a, b)
+            (aResult, bResult) = both' (view result) (a, b)
+            --(Symbolic _ aStorage, Symbolic _ bStorage) = (view storage (aEnv ^?! ix aSelf), view storage (bEnv ^?! ix bSelf))
+            differingResults = case (aResult, bResult) of
 
-              --(Just (VMSuccess aOut), Just (VMSuccess bOut)) ->
-                --aOut ./= bOut .|| aStorage ./= bStorage .|| fromBool (aSelf /= bSelf)
+              (Just (VMSuccess aOut), Just (VMSuccess bOut)) ->
+                aOut ./= bOut .|| aStorage ./= bStorage .|| fromBool (aSelf /= bSelf)
 
-              --(Just (VMFailure UnexpectedSymbolicArg), _) ->
-                --error $ "Unexpected symbolic argument at opcode: " <> maybe "??" show (vmOp a) <> ". Not supported (yet!)"
+              (Just (VMFailure (UnexpectedSymbolicArg int str expr)), _) ->
+                error $ "Unexpected symbolic argument at opcode: " <> maybe "??" show (vmOp a) <> ". Not supported (yet!)"
 
-              --(_, Just (VMFailure UnexpectedSymbolicArg)) ->
-                --error $ "Unexpected symbolic argument at opcode: " <> maybe "??" show (vmOp a) <> ". Not supported (yet!)"
+              (_, Just (VMFailure (UnexpectedSymbolicArg int str expr))) ->
+                error $ "Unexpected symbolic argument at opcode: " <> maybe "??" show (vmOp a) <> ". Not supported (yet!)"
 
-              --(Just (VMFailure _), Just (VMFailure _)) -> sFalse
+              (Just (VMFailure _), Just (VMFailure _)) -> sFalse
 
-              --(Just _, Just _) -> sTrue
+              (Just _, Just _) -> sTrue
 
-              --errormsg -> error $ show errormsg
+              errormsg -> error $ show errormsg
 
-        --in sAnd (fst <$> aPath) .&& sAnd (fst <$> bPath) .&& differingResults
-  ---- If there exists a pair of endstates where this is not the case,
-  ---- the following constraint is satisfiable
-  --constrain $ sOr differingEndStates
+        in sAnd (fst <$> aPath) .&& sAnd (fst <$> bPath) .&& differingResults
+  -- If there exists a pair of end states where this is not the case,
+  -- the following constraint is satisfiable
+  constrain $ sOr differingEndStates
 
-  --checkSat >>= \case
-     --Unk -> return $ Timeout ()
-     --Sat -> return $ Cex preStateA
-     --Unsat -> return $ Qed (leaves aVMs, leaves bVMs)
-     --DSat _ -> error "unexpected DSAT"
+  checkSat >>= \case
+     Sat _ -> return $ Cex preStateA
+     Unsat -> return $ Qed (leaves aVMs, leaves bVMs)
+     EVM.SMT.Unknown -> return $ Timeout ()
+     Error txt -> error "Error from solver: " <> txt
 
 both' :: (a -> b) -> (a, a) -> (b, b)
 both' f (x, y) = (f x, f y)

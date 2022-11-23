@@ -1363,6 +1363,18 @@ tests = testGroup "hevm"
           [Cex _] <- withSolvers Z3 1 Nothing $ \s -> checkAssert s defaultPanicCodes c (Just ("call_A()", [])) [] defaultVeriOpts
           putStrLn "expected counterexample found"
         ,
+        testCase "symb-vs-concrete-test" $ do
+          Just c <- solcRuntime "C"
+            [i|
+            contract C {
+              function fun(uint256 deposit_count) external pure {
+                return 2*deposit_count;
+              }
+             }
+            |]
+          [Cex _] <- withSolvers Z3 1 Nothing $ \s -> checkAssert s defaultPanicCodes c (Just ("fun(uint256)",  [AbiUIntType 256])) ["4"] debugVeriOpts
+          putStrLn "expected counterexample found"
+        ,
         expectFail $ testCase "keccak concrete and sym agree" $ do
           Just c <- solcRuntime "C"
             [i|
